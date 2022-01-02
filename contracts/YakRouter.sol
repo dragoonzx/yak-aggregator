@@ -35,8 +35,6 @@ contract YakRouter is Ownable {
     address public constant AVAX = address(0);
     string public constant NAME = "YakRouter";
     uint256 public constant FEE_DENOMINATOR = 1e4;
-    uint256 public MIN_FEE = 0;
-    address public FEE_CLAIMER;
     address[] public TRUSTED_TOKENS;
     address[] public ADAPTERS;
 
@@ -99,11 +97,9 @@ contract YakRouter is Ownable {
 
     constructor(
         address[] memory _adapters,
-        address[] memory _trustedTokens,
-        address _feeClaimer
+        address[] memory _trustedTokens
     ) {
         setTrustedTokens(_trustedTokens);
-        setFeeClaimer(_feeClaimer);
         setAdapters(_adapters);
         _setAllowances();
     }
@@ -125,16 +121,6 @@ contract YakRouter is Ownable {
     function setAdapters(address[] memory _adapters) public onlyOwner {
         emit UpdatedAdapters(_adapters);
         ADAPTERS = _adapters;
-    }
-
-    function setMinFee(uint256 _fee) external onlyOwner {
-        emit UpdatedMinFee(MIN_FEE, _fee);
-        MIN_FEE = _fee;
-    }
-
-    function setFeeClaimer(address _claimer) public onlyOwner {
-        emit UpdatedFeeClaimer(FEE_CLAIMER, _claimer);
-        FEE_CLAIMER = _claimer;
     }
 
     //  -- GENERAL --
@@ -172,7 +158,6 @@ contract YakRouter is Ownable {
         view
         returns (uint256)
     {
-        require(_fee >= MIN_FEE, "YakRouter: Insufficient fee");
         return _amountIn.mul(FEE_DENOMINATOR.sub(_fee)) / FEE_DENOMINATOR;
     }
 
@@ -652,15 +637,15 @@ contract YakRouter is Ownable {
         address _from,
         address _to,
         uint256 _fee,
-        address _fee_claimer
+        address _feeClaimer
     ) internal returns (uint256) {
         uint256[] memory amounts = new uint256[](_trade.path.length);
-        if (_fee > 0 || MIN_FEE > 0) {
+        if (_fee > 0) {
             // Transfer fees to the claimer account and decrease initial amount
             amounts[0] = _applyFee(_trade.amountIn, _fee);
             IERC20(_trade.path[0]).safeTransferFrom(
                 _from,
-                _fee_claimer,
+                _feeClaimer,
                 _trade.amountIn.sub(amounts[0])
             );
         } else {
@@ -710,30 +695,30 @@ contract YakRouter is Ownable {
         Trade calldata _trade,
         address _to,
         uint256 _fee,
-        address _fee_claimer
+        address _feeClaimer
     ) public {
-        _swapNoSplit(_trade, msg.sender, _to, _fee, _fee_claimer);
+        _swapNoSplit(_trade, msg.sender, _to, _fee, _feeClaimer);
     }
 
     function swapNoSplitFromAVAX(
         Trade calldata _trade,
         address _to,
         uint256 _fee,
-        address _fee_claimer
+        address _feeClaimer
     ) external payable {
         require(
             _trade.path[0] == WAVAX,
             "YakRouter: Path needs to begin with WAVAX"
         );
         _wrap(_trade.amountIn);
-        _swapNoSplit(_trade, address(this), _to, _fee, _fee_claimer);
+        _swapNoSplit(_trade, address(this), _to, _fee, _feeClaimer);
     }
 
     function swapNoSplitToAVAX(
         Trade calldata _trade,
         address _to,
         uint256 _fee,
-        address _fee_claimer
+        address _feeClaimer
     ) public {
         require(
             _trade.path[_trade.path.length - 1] == WAVAX,
@@ -744,7 +729,7 @@ contract YakRouter is Ownable {
             msg.sender,
             address(this),
             _fee,
-            _fee_claimer
+            _feeClaimer
         );
         _unwrap(returnAmount);
         _returnTokensTo(AVAX, returnAmount, _to);
@@ -761,7 +746,7 @@ contract YakRouter is Ownable {
         uint8 _v,
         bytes32 _r,
         bytes32 _s,
-        address _fee_claimer
+        address _feeClaimer
     ) external {
         IERC20(_trade.path[0]).permit(
             msg.sender,
@@ -772,7 +757,7 @@ contract YakRouter is Ownable {
             _r,
             _s
         );
-        swapNoSplit(_trade, _to, _fee, _fee_claimer);
+        swapNoSplit(_trade, _to, _fee, _feeClaimer);
     }
 
     /**
@@ -786,7 +771,7 @@ contract YakRouter is Ownable {
         uint8 _v,
         bytes32 _r,
         bytes32 _s,
-        address _fee_claimer
+        address _feeClaimer
     ) external {
         IERC20(_trade.path[0]).permit(
             msg.sender,
@@ -797,6 +782,6 @@ contract YakRouter is Ownable {
             _r,
             _s
         );
-        swapNoSplitToAVAX(_trade, _to, _fee, _fee_claimer);
+        swapNoSplitToAVAX(_trade, _to, _fee, _feeClaimer);
     }
 }
