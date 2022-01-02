@@ -155,10 +155,12 @@ contract YakRouter is Ownable {
 
     function _applyFee(uint256 _amountIn, uint256 _fee)
         internal
-        view
-        returns (uint256)
+        pure
+        returns (uint256 result)
     {
-        return _amountIn.mul(FEE_DENOMINATOR.sub(_fee)) / FEE_DENOMINATOR;
+        assembly {
+            result := div(mul(_amountIn, sub(FEE_DENOMINATOR, _fee)), FEE_DENOMINATOR)
+        }
     }
 
     function _wrap(uint256 _amount) internal {
