@@ -19,6 +19,8 @@
 pragma solidity >=0.7.0;
 pragma experimental ABIEncoderV2;
 
+import "hardhat/console.sol";
+
 import "./lib/BytesManipulation.sol";
 import "./interface/IAdapter.sol";
 import "./interface/IERC20.sol";
@@ -39,6 +41,7 @@ contract YakRouter is Ownable {
     address public FEE_CLAIMER;
     address[] public TRUSTED_TOKENS;
     address[] public ADAPTERS;
+    address[] public FAVORITE_ADAPTERS;
 
     event Recovered(
         address indexed _asset, 
@@ -50,6 +53,10 @@ contract YakRouter is Ownable {
     );
 
     event UpdatedAdapters(
+        address[] _newAdapters
+    );
+
+    event UpdatedFavoriteAdapters(
         address[] _newAdapters
     );
 
@@ -146,6 +153,11 @@ contract YakRouter is Ownable {
         emit UpdatedFeeClaimer(FEE_CLAIMER, _claimer);
         FEE_CLAIMER = _claimer;
     }
+    
+    function setFavoriteAdapters(address[] memory _adapters) public onlyOwner {
+        emit UpdatedFavoriteAdapters(_adapters);
+        FAVORITE_ADAPTERS = _adapters;
+    }
 
     //  -- GENERAL --
 
@@ -155,6 +167,10 @@ contract YakRouter is Ownable {
 
     function adaptersCount() external view returns (uint) {
         return ADAPTERS.length;
+    }
+
+    function favoriteAdaptersCount() external view returns (uint) {
+        return FAVORITE_ADAPTERS.length;
     }
 
     function recoverERC20(address _tokenAddress, uint _tokenAmount) external onlyOwner {
@@ -336,10 +352,30 @@ contract YakRouter is Ownable {
         address _tokenIn, 
         address _tokenOut,
         uint8[] calldata _options
-    ) public view returns (Query memory) {
+    ) external view returns (Query memory) {
         Query memory bestQuery;
         for (uint8 i; i<_options.length; i++) {
             address _adapter = ADAPTERS[_options[i]];
+            uint amountOut = IAdapter(_adapter).query(
+                _amountIn, 
+                _tokenIn, 
+                _tokenOut
+            );
+            if (i==0 || amountOut>bestQuery.amountOut) {
+                bestQuery = Query(_adapter, _tokenIn, _tokenOut, amountOut);
+            }
+        }
+        return bestQuery;
+    }
+
+    function queryNoSplitFavorites(
+        uint256 _amountIn, 
+        address _tokenIn, 
+        address _tokenOut
+    ) internal view returns (Query memory) {
+        Query memory bestQuery;
+        for (uint8 i; i<FAVORITE_ADAPTERS.length; i++) {
+            address _adapter = FAVORITE_ADAPTERS[i];
             uint amountOut = IAdapter(_adapter).query(
                 _amountIn, 
                 _tokenIn, 
@@ -498,6 +534,24 @@ contract YakRouter is Ownable {
             queries.path = '';
         }
         return _formatOffer(queries);
+    }
+    
+    function findBestPathForFavorites(
+        uint256 _amountIn, 
+        address _tokenIn, 
+        address _tokenOut, 
+        uint _maxSteps
+    ) public view returns (FormattedOffer memory) {
+        Offer memory queries;
+        queries.amounts = BytesManipulation.toBytes(_amountIn);
+        queries.path = BytesManipulation.toBytes(_tokenIn);
+        queries = _findBestPathForFavorites(_amountIn, _tokenIn, _tokenOut, _maxSteps, queries);
+        // If no paths are found return empty struct
+        if (queries.adapters.length==0) {
+            queries.amounts = '';
+            queries.path = '';
+        }
+        return _formatOffer(queries);
     } 
 
     function _findBestPath(
@@ -507,10 +561,45 @@ contract YakRouter is Ownable {
         uint _maxSteps,
         Offer memory _queries
     ) internal view returns (Offer memory) {
+        return _findBestPathShared(
+            _amountIn,
+            _tokenIn, 
+            _tokenOut, 
+            _maxSteps,
+            _queries,
+            false
+        ); 
+    }
+
+    function _findBestPathForFavorites(
+        uint256 _amountIn, 
+        address _tokenIn, 
+        address _tokenOut, 
+        uint _maxSteps,
+        Offer memory _queries
+    ) internal view returns (Offer memory) {
+        return _findBestPathShared(
+            _amountIn,
+            _tokenIn, 
+            _tokenOut, 
+            _maxSteps,
+            _queries,
+            true
+        );
+    }
+
+    function _findBestPathShared(
+        uint256 _amountIn, 
+        address _tokenIn, 
+        address _tokenOut, 
+        uint _maxSteps,
+        Offer memory _queries,
+        bool onlyFavorites
+    ) internal view returns (Offer memory) {
         Offer memory bestOption = _cloneOffer(_queries);
         uint256 bestAmountOut;
         // First check if there is a path directly from tokenIn to tokenOut
-        Query memory queryDirect = queryNoSplit(_amountIn, _tokenIn, _tokenOut);
+        Query memory queryDirect = onlyFavorites ? queryNoSplitFavorites(_amountIn, _tokenIn, _tokenOut) : queryNoSplit(_amountIn, _tokenIn, _tokenOut);
         if (queryDirect.amountOut!=0) {
             _addQuery(bestOption, queryDirect.amountOut, queryDirect.adapter, queryDirect.tokenOut);
             bestAmountOut = queryDirect.amountOut;
@@ -523,14 +612,20 @@ contract YakRouter is Ownable {
                     continue;
                 }
                 // Loop through all adapters to find the best one for swapping tokenIn for one of the trusted tokens
-                Query memory bestSwap = queryNoSplit(_amountIn, _tokenIn, TRUSTED_TOKENS[i]);
+                Query memory bestSwap = onlyFavorites ? queryNoSplitFavorites(_amountIn, _tokenIn, TRUSTED_TOKENS[i]) : queryNoSplit(_amountIn, _tokenIn, TRUSTED_TOKENS[i]);
                 if (bestSwap.amountOut==0) {
                     continue;
                 }
                 // Explore options that connect the current path to the tokenOut
                 Offer memory newOffer = _cloneOffer(_queries);
                 _addQuery(newOffer, bestSwap.amountOut, bestSwap.adapter, bestSwap.tokenOut);
-                newOffer = _findBestPath(
+                newOffer = onlyFavorites ? _findBestPathForFavorites(
+                    bestSwap.amountOut, 
+                    TRUSTED_TOKENS[i], 
+                    _tokenOut, 
+                    _maxSteps,
+                    newOffer
+                ) : _findBestPath(
                     bestSwap.amountOut, 
                     TRUSTED_TOKENS[i], 
                     _tokenOut, 
@@ -546,14 +641,14 @@ contract YakRouter is Ownable {
                 }
             }
         }
-        return bestOption;   
+        return bestOption; 
     }
 
 
     // -- SWAPPERS --
 
     function _swapNoSplit(
-        Trade calldata _trade,
+        Trade memory _trade,
         address _from,
         address _to, 
         uint _fee
@@ -603,6 +698,80 @@ contract YakRouter is Ownable {
             amounts[amounts.length-1]
         );
         return amounts[amounts.length-1];
+    }
+
+    function _swapNoSplitWithoutQuery(
+        Trade memory _trade,
+        uint256[] memory _amounts,
+        address _from,
+        address _to, 
+        uint _fee
+    ) internal returns (uint) {
+        if (_fee > 0 || MIN_FEE > 0) {
+            // Transfer fees to the claimer account and decrease initial amount
+            _amounts[0] = _applyFee(_trade.amountIn, _fee);
+            IERC20(_trade.path[0]).safeTransferFrom(
+                _from, 
+                FEE_CLAIMER, 
+                _trade.amountIn.sub(_amounts[0])
+            );
+        } else {
+            _amounts[0] = _trade.amountIn;
+        }
+        IERC20(_trade.path[0]).safeTransferFrom(
+            _from, 
+            _trade.adapters[0], 
+            _amounts[0]
+        );
+        for (uint256 i=0; i<_trade.adapters.length; i++) {
+            // All adapters should transfer output token to the following target
+            // All targets are the adapters, expect for the last swap where tokens are sent out
+            address targetAddress = i<_trade.adapters.length-1 ? _trade.adapters[i+1] : _to;
+            IAdapter(_trade.adapters[i]).swap(
+                _amounts[i], 
+                _amounts[i+1], 
+                _trade.path[i], 
+                _trade.path[i+1],
+                targetAddress
+            );
+        }
+        emit YakSwap(
+            _trade.path[0], 
+            _trade.path[_trade.path.length-1], 
+            _trade.amountIn, 
+            _amounts[_amounts.length-1]
+        );
+        return _amounts[_amounts.length-1];
+    }
+
+    // Assume that we already provided approve
+    function findPathAndSwap(
+        uint256 _amountIn,
+        address _fromToken,
+        address _toToken,
+        address _to, 
+        uint _fee
+    ) public returns (uint) {
+        FormattedOffer memory offer = findBestPathForFavorites(
+            _amountIn,
+            _fromToken,
+            _toToken,
+            1
+        );
+        Trade memory trade = Trade(
+            _amountIn,
+            offer.amounts[offer.amounts.length - 1],
+            offer.path,
+            offer.adapters
+        );
+        uint256 result = _swapNoSplitWithoutQuery(
+            trade,
+            offer.amounts,
+            msg.sender,
+            _to,
+            _fee
+        );
+        return result;
     }
 
     function swapNoSplit(
