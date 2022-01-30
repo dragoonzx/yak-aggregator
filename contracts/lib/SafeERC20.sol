@@ -22,63 +22,111 @@ library SafeERC20 {
     function safeTransfer(
         IERC20 token,
         address to,
-        uint256 value
+        uint256 amount
     ) internal {
-        _callOptionalReturn(token, abi.encodeWithSelector(token.transfer.selector, to, value));
+        bool callStatus;
+
+        assembly {
+            // Get a pointer to some free memory.
+            let freeMemoryPointer := mload(0x40)
+
+            // Write the abi-encoded calldata to memory piece by piece:
+            mstore(freeMemoryPointer, 0xa9059cbb00000000000000000000000000000000000000000000000000000000) // Begin with the function selector.
+            mstore(add(freeMemoryPointer, 4), and(to, 0xffffffffffffffffffffffffffffffffffffffff)) // Mask and append the "to" argument.
+            mstore(add(freeMemoryPointer, 36), amount) // Finally append the "amount" argument. No mask as it's a full 32 byte value.
+
+            // Call the token and store if it succeeded or not.
+            // We use 68 because the calldata length is 4 + 32 * 2.
+            callStatus := call(gas(), token, 0, freeMemoryPointer, 68, 0, 0)
+        }
+
+        require(didLastOptionalReturnCallSucceed(callStatus), "TRANSFER_FAILED");
     }
 
     function safeTransferFrom(
         IERC20 token,
         address from,
         address to,
-        uint256 value
+        uint256 amount
     ) internal {
-        _callOptionalReturn(
-            token,
-            abi.encodeWithSelector(token.transferFrom.selector, from, to, value)
-        );
+        bool callStatus;
+
+        assembly {
+            // Get a pointer to some free memory.
+            let freeMemoryPointer := mload(0x40)
+
+            // Write the abi-encoded calldata to memory piece by piece:
+            mstore(freeMemoryPointer, 0x23b872dd00000000000000000000000000000000000000000000000000000000) // Begin with the function selector.
+            mstore(add(freeMemoryPointer, 4), and(from, 0xffffffffffffffffffffffffffffffffffffffff)) // Mask and append the "from" argument.
+            mstore(add(freeMemoryPointer, 36), and(to, 0xffffffffffffffffffffffffffffffffffffffff)) // Mask and append the "to" argument.
+            mstore(add(freeMemoryPointer, 68), amount) // Finally append the "amount" argument. No mask as it's a full 32 byte value.
+
+            // Call the token and store if it succeeded or not.
+            // We use 100 because the calldata length is 4 + 32 * 3.
+            callStatus := call(gas(), token, 0, freeMemoryPointer, 100, 0, 0)
+        }
+
+        require(didLastOptionalReturnCallSucceed(callStatus), "TRANSFER_FROM_FAILED");
     }
 
     function safeApprove(
         IERC20 token,
-        address spender,
-        uint256 value
+        address to,
+        uint256 amount
     ) internal {
-        // safeApprove should only be called when setting an initial allowance,
-        // or when resetting it to zero. To increase and decrease it, use
-        // 'safeIncreaseAllowance' and 'safeDecreaseAllowance'
-        // solhint-disable-next-line max-line-length
-        require(
-            (value == 0) || (token.allowance(address(this), spender) == 0),
-            "SafeERC20: approve from non-zero to non-zero allowance"
-        );
-        _callOptionalReturn(token, abi.encodeWithSelector(token.approve.selector, spender, value));
+        bool callStatus;
+
+        assembly {
+            // Get a pointer to some free memory.
+            let freeMemoryPointer := mload(0x40)
+
+            // Write the abi-encoded calldata to memory piece by piece:
+            mstore(freeMemoryPointer, 0x095ea7b300000000000000000000000000000000000000000000000000000000) // Begin with the function selector.
+            mstore(add(freeMemoryPointer, 4), and(to, 0xffffffffffffffffffffffffffffffffffffffff)) // Mask and append the "to" argument.
+            mstore(add(freeMemoryPointer, 36), amount) // Finally append the "amount" argument. No mask as it's a full 32 byte value.
+
+            // Call the token and store if it succeeded or not.
+            // We use 68 because the calldata length is 4 + 32 * 2.
+            callStatus := call(gas(), token, 0, freeMemoryPointer, 68, 0, 0)
+        }
+
+        require(didLastOptionalReturnCallSucceed(callStatus), "APPROVE_FAILED");
     }
 
     /**
      * @dev Imitates a Solidity high-level call (i.e. a regular function call to a contract), relaxing the requirement
      * on the return value: the return value is optional (but if data is returned, it must not be false).
-     * @param token The token targeted by the call.
-     * @param data The call data (encoded using abi.encode or one of its variants).
      */
-    function _callOptionalReturn(IERC20 token, bytes memory data) private {
-        // We need to perform a low level call here, to bypass Solidity's return data size checking mechanism, since
-        // we're implementing it ourselves.
+    function didLastOptionalReturnCallSucceed(bool callStatus) private pure returns (bool success) {
+        assembly {
+            // Get how many bytes the call returned.
+            let returnDataSize := returndatasize()
 
-        // A Solidity high level call has three parts:
-        //  1. The target address is checked to verify it contains contract code
-        //  2. The call itself is made, and success asserted
-        //  3. The return value is decoded, which in turn checks the size of the returned data.
-        // solhint-disable-next-line max-line-length
+            // If the call reverted:
+            if iszero(callStatus) {
+                // Copy the revert message into memory.
+                returndatacopy(0, 0, returnDataSize)
 
-        // solhint-disable-next-line avoid-low-level-calls
-        (bool success, bytes memory returndata) = address(token).call(data);
-        require(success, "SafeERC20: low-level call failed");
+                // Revert with the same message.
+                revert(0, returnDataSize)
+            }
 
-        if (returndata.length > 0) {
-            // Return data is optional
-            // solhint-disable-next-line max-line-length
-            require(abi.decode(returndata, (bool)), "SafeERC20: ERC20 operation did not succeed");
+            switch returnDataSize
+            case 32 {
+                // Copy the return data into memory.
+                returndatacopy(0, 0, returnDataSize)
+
+                // Set success to whether it returned true.
+                success := iszero(iszero(mload(0)))
+            }
+            case 0 {
+                // There was no return data.
+                success := 1
+            }
+            default {
+                // It returned some malformed input.
+                success := 0
+            }
         }
     }
 }
